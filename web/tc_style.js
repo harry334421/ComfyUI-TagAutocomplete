@@ -271,28 +271,42 @@ const LIGHT_VARS = {
   "--tac-lt-3": "#2f7d2f",
 };
 
+let darkCache = { value: null, at: 0 };
+
 export function isDarkMode() {
+  /* called once per rendered row - getComputedStyle would force a style flush each time */
+  const now = Date.now();
+  if (darkCache.value !== null && now - darkCache.at < 1000) return darkCache.value;
+
   const root = document.documentElement;
   const attr = (root.dataset.theme || root.getAttribute("data-theme") || "").toLowerCase();
-  if (attr.includes("dark")) return true;
-  if (attr.includes("light")) return false;
-  if (document.body?.classList.contains("dark")) return true;
-  try {
-    const bg = getComputedStyle(document.body).backgroundColor || "";
-    const match = bg.match(/rgba?\(([^)]+)\)/);
-    if (match) {
-      const [r, g, b] = match[1].split(",").map((part) => parseFloat(part));
-      if (Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b)) {
-        return 0.299 * r + 0.587 * g + 0.114 * b < 128;
+  let value = null;
+  if (attr.includes("dark")) value = true;
+  else if (attr.includes("light")) value = false;
+  else if (document.body?.classList.contains("dark")) value = true;
+
+  if (value === null) {
+    try {
+      const bg = getComputedStyle(document.body).backgroundColor || "";
+      const match = bg.match(/rgba?\(([^)]+)\)/);
+      if (match) {
+        const [r, g, b] = match[1].split(",").map((part) => parseFloat(part));
+        if (Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b)) {
+          value = 0.299 * r + 0.587 * g + 0.114 * b < 128;
+        }
       }
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
   }
-  return true;
+  if (value === null) value = true;
+
+  darkCache = { value, at: now };
+  return value;
 }
 
 export function applyThemeVars() {
+  darkCache = { value: null, at: 0 };
   const vars = isDarkMode() ? DARK_VARS : LIGHT_VARS;
   const root = document.documentElement;
   for (const [key, value] of Object.entries(vars)) root.style.setProperty(key, value);

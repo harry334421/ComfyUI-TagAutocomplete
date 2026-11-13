@@ -55,10 +55,31 @@ export async function ensureTagFile(name = CFG.tagFile, force = false) {
   }
 }
 
+const CJK_CHAR = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+
+/**
+ * True when the translation file is basically a Chinese dictionary. Only then
+ * can `searchTagList` skip translation lookups for pure ASCII queries.
+ */
+function isCJKDominant(map) {
+  if (!map.size) return false;
+  let checked = 0;
+  let cjk = 0;
+  for (const value of map.values()) {
+    checked++;
+    if (CJK_CHAR.test(String(value))) cjk++;
+    if (checked >= 200) break;
+  }
+  return cjk / checked >= 0.9;
+}
+
 /** Load the translation file into `state.translations` (a Map). */
 export async function ensureTranslations(name = CFG.translationFile, oldFormat = CFG.translationOldFormat) {
   state.translations = new Map();
-  if (!name || name === "None") return state.translations;
+  if (!name || name === "None") {
+    state.translationsAreCJK = false;
+    return state.translations;
+  }
 
   const cacheKey = `${name}|${oldFormat ? "old" : "new"}`;
   let rows = state.translationCache.get(cacheKey);
@@ -75,6 +96,7 @@ export async function ensureTranslations(name = CFG.translationFile, oldFormat =
     else map.set(row[0], "Not found");
   }
   state.translations = map;
+  state.translationsAreCJK = isCJKDominant(map);
   return map;
 }
 
@@ -174,4 +196,61 @@ export async function fetchModelKeywords(kind, name) {
   }
   state.keywordCache.set(key, keywords);
   return keywords;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Usage counts
+ *
+ * The table is small (a few thousand rows at most), so it is fetched once and
+ * kept in memory. Every keystroke used to fire a request with up to 2000
+ * lookups that the server answered one SELECT at a time.
+ * ------------------------------------------------------------------------- */
+export function usageKey(name, type) {
+  return `${name}\u0000${type}`;
+}
+
+export async function loadUsageMap() {
+  state.usageMap.clear();
+  try {
+    const response = await getJSON("/tagcomplete/frequency/all");
+    for (const [name, type, pos, neg, lastUsed] of response?.result || []) {
+      state.usageMap.set(usageKey(name, type), {
+        pos: parseInt(pos, 10) || 0,
+        neg: parseInt(neg, 10) || 0,
+        last: lastUsed || "",
+      });
+    }
+  } catch {
+    state.usageMap.clear();
+  }
+  return state.usageMap;
+}
+
+/** Usage count of one result, honouring the "max age" setting (0 = no limit). */
+export function usageCount(name, type, negative) {
+  const entry = state.usageMap.get(usageKey(name, type));
+  if (!entry) return 0;
+  const maxAge = parseInt(CFG.frequencyMaxAge, 10) || 0;
+  /* sqlite writes UTC "YYYY-MM-DD HH:MM:SS"; lexicographic compare is enough */
+  if (maxAge > 0 && entry.last) {
+    const cutoff = new Date(Date.now() - maxAge * 86400000).toISOString().slice(0, 19).replace("T", " ");
+    if (entry.last < cutoff) return 0;
+  }
+  return negative ? entry.neg : entry.pos;
+}
+
+export function bumpUsage(name, type, negative) {
+  const key = usageKey(name, type);
+  const entry = state.usageMap.get(key) || { pos: 0, neg: 0, last: "" };
+  if (negative) entry.neg += 1;
+  else entry.pos += 1;
+  entry.last = new Date().toISOString().slice(0, 19).replace("T", " ");
+  state.usageMap.set(key, entry);
+}
+
+export function clearUsage(name, type, positive = true, negative = true) {
+  const entry = state.usageMap.get(usageKey(name, type));
+  if (!entry) return;
+  if (positive) entry.pos = 0;
+  if (negative) entry.neg = 0;
 }

@@ -22,7 +22,6 @@ from pathlib import Path
 
 from tc_common import (
     DB_FILE,
-    DEFAULT_WILDCARD_DIR,
     PACKAGE_DIR,
     TAGS_DIR,
     TEMP_DIR,
@@ -174,172 +173,6 @@ def resolve_tag_file(name: str) -> Path | None:
 
 
 # --------------------------------------------------------------------------- #
-# wildcards
-# --------------------------------------------------------------------------- #
-def wildcard_dirs() -> list[Path]:
-    settings = load_settings()
-    dirs: list[Path] = [DEFAULT_WILDCARD_DIR, comfy_base_dir() / "wildcards"]
-
-    for extra in settings.get("wildcardPaths", []) or []:
-        try:
-            dirs.append(Path(os.path.expandvars(os.path.expanduser(str(extra)))))
-        except Exception:
-            continue
-
-    for node_dir in custom_nodes_dirs():
-        try:
-            for candidate in node_dir.glob("*/wildcards"):
-                if candidate.is_dir():
-                    dirs.append(candidate)
-        except Exception:
-            continue
-
-    out: list[Path] = []
-    seen: set[str] = set()
-    for path in dirs:
-        try:
-            if not path.exists() or not path.is_dir():
-                continue
-            key = str(path.resolve()).lower()
-        except Exception:
-            continue
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(path)
-    return out
-
-
-def scan_wildcards() -> dict:
-    """Return wildcard files, yaml wildcard collections and UMI tag counts."""
-
-    def build():
-        files: list[list] = []
-        yaml_files: list[tuple[Path, Path]] = []
-
-        for root in wildcard_dirs():
-            try:
-                root_key = root.as_posix()
-            except Exception:
-                continue
-            for path in _walk(root, {".txt"}):
-                if path.name == "put wildcards here.txt":
-                    continue
-                try:
-                    rel = path.relative_to(root).as_posix()
-                except Exception:
-                    continue
-                name = rel[:-4] if rel.lower().endswith(".txt") else rel
-                files.append([root_key, name, since_epoch(path)])
-            for path in _walk(root, {".yaml", ".yml"}):
-                yaml_files.append((path, root))
-
-        files.sort(key=lambda item: str(item[1]).lower())
-
-        yaml_wildcards: dict = {}
-        umi_entries: dict[str, dict] = {}
-
-        try:
-            import yaml  # type: ignore
-        except Exception:  # noqa: BLE001
-            yaml = None
-
-        for path, root in yaml_files:
-            if yaml is None:
-                break
-            try:
-                with open(path, encoding="utf-8") as handle:
-                    data = yaml.safe_load(handle)
-            except Exception:
-                continue
-            if not isinstance(data, dict):
-                continue
-
-            if _looks_like_umi(data):
-                for name, item in data.items():
-                    tags = item.get("Tags") if isinstance(item, dict) else None
-                    if not isinstance(tags, list) or not tags:
-                        continue
-                    entry = umi_entries.setdefault(str(name), {"tags": [], "count": 0})
-                    entry["tags"] = [str(tag) for tag in tags]
-                    entry["count"] += 1
-            else:
-                cleaned = _clean_dynamic_prompt_data(data)
-                if cleaned:
-                    try:
-                        rel_parent = path.relative_to(root).parent
-                        parts = [part for part in rel_parent.parts if part not in ("", ".")]
-                    except Exception:
-                        parts = []
-                    for part in reversed(parts):
-                        cleaned = {part: cleaned}
-                    yaml_wildcards[path.name] = cleaned
-
-        umi_list = sorted(umi_entries.items(), key=lambda item: item[1]["count"], reverse=True)
-        umi_out = [[name, info["tags"], info["count"]] for name, info in umi_list]
-
-        try:
-            TEMP_DIR.mkdir(parents=True, exist_ok=True)
-            (TEMP_DIR / "wc_yaml.json").write_text(
-                json.dumps(yaml_wildcards, ensure_ascii=False), encoding="utf-8"
-            )
-            (TEMP_DIR / "wc.txt").write_text(
-                "\n".join(f"{base},{name}" for base, name, _ in files), encoding="utf-8"
-            )
-            (TEMP_DIR / "umi_tags.txt").write_text(
-                "\n".join(f"{name},{count},{','.join(tags)}" for name, tags, count in umi_out), encoding="utf-8"
-            )
-        except Exception:
-            pass
-
-        return {"wildcards": files, "yamlWildcards": yaml_wildcards, "umiTags": umi_out}
-
-    return _cached("wildcards", build)
-
-
-def _looks_like_umi(data: dict) -> bool:
-    if not data:
-        return False
-    for item in data.values():
-        if not isinstance(item, dict) or "Tags" not in item or not isinstance(item["Tags"], list):
-            return False
-    return True
-
-
-def _clean_dynamic_prompt_data(data: dict) -> dict:
-    out: dict = {}
-    for key, value in data.items():
-        if isinstance(value, dict):
-            nested = _clean_dynamic_prompt_data(value)
-            if nested:
-                out[key] = nested
-        elif isinstance(value, str):
-            out[key] = value
-        elif isinstance(value, list) and all(isinstance(item, str) for item in value):
-            out[key] = value
-    return out
-
-
-def wildcard_contents(base: str, filename: str) -> str | None:
-    root = Path(base)
-    try:
-        if not root.exists() or not root.is_dir():
-            return None
-    except Exception:
-        return None
-    candidate = safe_child(root, filename)
-    if candidate is None or not candidate.is_file():
-        return None
-    if candidate.suffix.lower() not in {".txt"}:
-        return None
-    try:
-        return candidate.read_text(encoding="utf-8", errors="replace")
-    except Exception as exc:  # noqa: BLE001
-        log("could not read wildcard file:", exc)
-        return None
-
-
-# --------------------------------------------------------------------------- #
 # embeddings / loras / hypernetworks
 # --------------------------------------------------------------------------- #
 def scan_embeddings() -> list[list]:
@@ -348,25 +181,40 @@ def scan_embeddings() -> list[list]:
         results: list[list] = []
         for name, mtime in entries:
             stem = name[: name.rfind(".")] if "." in name else name
-            results.append([stem, mtime, _embedding_version(name)])
+            results.append([stem, mtime, _embedding_version(name, mtime)])
         results.sort(key=lambda item: item[0].lower())
         return results
 
     return _cached("embeddings", build)
 
 
-def _embedding_version(name: str) -> str:
-    """Best effort guess of the CLIP version, based on the last tensor dimension."""
+_version_cache: dict[str, tuple[float, str]] = {}
+
+
+def _embedding_version(name: str, mtime: float = 0.0) -> str:
+    """Best effort guess of the CLIP version, based on the last tensor dimension.
+
+    Reading the safetensors header means opening every file, so the result is
+    cached by modification time and only re-read when the file changes.
+    """
+    key = f"{name}\0{mtime}"
+    hit = _version_cache.get(key)
+    if hit and hit[0] == mtime:
+        return hit[1]
+
     path = _full_path("embeddings", name)
     if path is None or path.suffix.lower() != ".safetensors":
+        _version_cache[key] = (mtime, "")
         return ""
     try:
         with open(path, "rb") as handle:
             header_len = struct.unpack("<Q", handle.read(8))[0]
             if header_len <= 0 or header_len > 8 * 1024 * 1024:
+                _version_cache[key] = (mtime, "")
                 return ""
             header = json.loads(handle.read(header_len).decode("utf-8", errors="replace"))
     except Exception:
+        _version_cache[key] = (mtime, "")
         return ""
     dims: set[int] = set()
     for key, value in header.items():
@@ -378,13 +226,15 @@ def _embedding_version(name: str) -> str:
                 dims.add(int(shape[-1]))
             except Exception:
                 continue
+    version = ""
     if 768 in dims:
-        return "v1"
-    if 1024 in dims:
-        return "v2"
-    if 2048 in dims:
-        return "vXL"
-    return ""
+        version = "v1"
+    elif 1024 in dims:
+        version = "v2"
+    elif 2048 in dims:
+        version = "vXL"
+    _version_cache[key] = (mtime, version)
+    return version
 
 
 def scan_loras() -> list[list]:
@@ -461,8 +311,7 @@ def find_model_file(folder_name: str, name: str) -> Path | None:
 
     wanted = str(name).replace("\\", "/").lower()
     bare = wanted.rsplit("/", 1)[-1]
-    entries, roots = _folder_listing(folder_name)
-    for rel, _mtime in entries:
+    for rel, _mtime in _scan_models(folder_name):
         lowered = rel.lower()
         stem = lowered[: lowered.rfind(".")] if "." in lowered else lowered
         if lowered == wanted or stem == wanted or stem.rsplit("/", 1)[-1] == bare:
@@ -611,7 +460,6 @@ def find_preview(folder_name: str, name: str) -> Path | None:
 # aggregated payload for the browser
 # --------------------------------------------------------------------------- #
 def data_payload() -> dict:
-    wildcard_data = scan_wildcards()
     files = list_tag_files()
     settings = load_settings()
     return {
@@ -620,9 +468,6 @@ def data_payload() -> dict:
         "tagsPath": TAGS_DIR.as_posix(),
         "files": files,
         "settings": settings,
-        "wildcards": wildcard_data["wildcards"],
-        "yamlWildcards": wildcard_data["yamlWildcards"],
-        "umiTags": wildcard_data["umiTags"],
         "embeddings": scan_embeddings(),
         "loras": scan_loras(),
         "lycos": scan_lycos(),
@@ -632,7 +477,6 @@ def data_payload() -> dict:
             "loras": [str(p) for p in folder_paths_for("loras")],
             "embeddings": [str(p) for p in folder_paths_for("embeddings")],
             "hypernetworks": [str(p) for p in folder_paths_for("hypernetworks")],
-            "wildcards": [str(p) for p in wildcard_dirs()],
         },
     }
 
@@ -648,6 +492,8 @@ class UsageDatabase:
     def __init__(self, path: Path = DB_FILE) -> None:
         self.path = path
         self.error: str | None = None
+        self._lock = threading.RLock()
+        self._conn: sqlite3.Connection | None = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self._ensure_schema()
@@ -656,13 +502,19 @@ class UsageDatabase:
             log("frequency database unavailable:", exc)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=30)
+        """One long lived connection: WAL keeps concurrent readers from blocking."""
+        if self._conn is not None:
+            return self._conn
+        conn = sqlite3.connect(self.path, timeout=5, check_same_thread=False)
         conn.isolation_level = None
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn = conn
         return conn
 
     def _ensure_schema(self) -> None:
-        conn = self._connect()
-        try:
+        with self._lock:
+            conn = self._connect()
             cursor = conn.cursor()
             cursor.execute("CREATE TABLE IF NOT EXISTS db_data (key TEXT PRIMARY KEY, value TEXT)")
             cursor.execute(
@@ -681,96 +533,34 @@ class UsageDatabase:
                 "INSERT OR REPLACE INTO db_data (key, value) VALUES ('version', ?)",
                 (str(self.version),),
             )
-        finally:
-            conn.close()
 
     # -- reading ------------------------------------------------------------
-    def counts(
-        self,
-        names: list[str],
-        types: list[int],
-        negative: bool = False,
-        max_age_days: int | None = None,
-    ) -> list[list]:
-        column = "count_neg" if negative else "count_pos"
-        rows: list[list] = []
-        conn = self._connect()
-        try:
-            cursor = conn.cursor()
-            for name, tag_type in zip(names, types):
-                try:
-                    tag_type_int = int(tag_type)
-                except Exception:
-                    tag_type_int = 0
-                if max_age_days:
-                    cursor.execute(
-                        f"SELECT {column}, last_used FROM tag_frequency "
-                        "WHERE name = ? AND type = ? "
-                        "AND last_used > datetime('now', '-' || ? || ' days')",
-                        (name, tag_type_int, int(max_age_days)),
-                    )
-                else:
-                    cursor.execute(
-                        f"SELECT {column}, last_used FROM tag_frequency WHERE name = ? AND type = ?",
-                        (name, tag_type_int),
-                    )
-                row = cursor.fetchone()
-                if row:
-                    rows.append([name, tag_type, int(row[0] or 0), row[1]])
-                else:
-                    rows.append([name, tag_type, 0, None])
-        finally:
-            conn.close()
-        return rows
-
-    def single_count(self, name: str, tag_type: int, negative: bool = False):
-        column = "count_neg" if negative else "count_pos"
-        conn = self._connect()
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                f"SELECT {column}, last_used FROM tag_frequency WHERE name = ? AND type = ?",
-                (name, int(tag_type)),
-            )
-            row = cursor.fetchone()
-        finally:
-            conn.close()
-        if row:
-            return [int(row[0] or 0), row[1]]
-        return [0, None]
-
-    def all_counts(self) -> list[list]:
-        conn = self._connect()
-        try:
-            cursor = conn.cursor()
+    def all_counts(self, limit: int = 20000) -> list[list]:
+        with self._lock:
+            cursor = self._connect().cursor()
             cursor.execute(
                 "SELECT name, type, count_pos, count_neg, last_used FROM tag_frequency "
-                "WHERE count_pos > 0 OR count_neg > 0 ORDER BY count_pos + count_neg DESC"
+                "WHERE count_pos > 0 OR count_neg > 0 "
+                "ORDER BY count_pos + count_neg DESC LIMIT ?",
+                (int(limit),),
             )
             rows = cursor.fetchall()
-        finally:
-            conn.close()
         return [list(row) for row in rows]
 
     # -- writing ------------------------------------------------------------
     def increase(self, name: str, tag_type: int, negative: bool = False) -> None:
-        tag_type = int(tag_type)
-        pos = self.single_count(name, tag_type, False)[0]
-        neg = self.single_count(name, tag_type, True)[0]
-        if negative:
-            neg += 1
-        else:
-            pos += 1
-        conn = self._connect()
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT OR REPLACE INTO tag_frequency (name, type, count_pos, count_neg, last_used) "
-                "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                (name, tag_type, pos, neg),
+        pos = 0 if negative else 1
+        neg = 1 if negative else 0
+        with self._lock:
+            self._connect().execute(
+                "INSERT INTO tag_frequency (name, type, count_pos, count_neg, last_used) "
+                "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(name, type) DO UPDATE SET "
+                "count_pos = COALESCE(tag_frequency.count_pos, 0) + excluded.count_pos, "
+                "count_neg = COALESCE(tag_frequency.count_neg, 0) + excluded.count_neg, "
+                "last_used = CURRENT_TIMESTAMP",
+                (name, int(tag_type), pos, neg),
             )
-        finally:
-            conn.close()
 
     def reset(self, name: str, tag_type: int, positive: bool = True, negative: bool = False) -> None:
         if positive and negative:
@@ -781,15 +571,11 @@ class UsageDatabase:
             set_clause = "count_neg = 0"
         else:
             return
-        conn = self._connect()
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
+        with self._lock:
+            self._connect().execute(
                 f"UPDATE tag_frequency SET {set_clause} WHERE name = ? AND type = ?",
                 (name, int(tag_type)),
             )
-        finally:
-            conn.close()
 
 
 try:

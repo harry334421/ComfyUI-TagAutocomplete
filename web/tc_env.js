@@ -109,11 +109,6 @@ export async function postJSON(path, body) {
   return parseResponse(response);
 }
 
-export async function postEmpty(path) {
-  const response = await fetch(apiURL(path), { method: "POST" });
-  return parseResponse(response);
-}
-
 export function toast(summary, detail = "", severity = "info") {
   try {
     const manager = getApp()?.extensionManager;

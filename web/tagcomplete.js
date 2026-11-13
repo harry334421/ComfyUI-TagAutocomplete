@@ -6,7 +6,7 @@
  */
 
 import { CFG, loadServerConfig, onConfigChanged, state } from "./tc_config.js";
-import { loadFileDependentData } from "./tc_data.js";
+import { loadFileDependentData, loadUsageMap } from "./tc_data.js";
 import { applyPopupStyle, applyThemeVars, injectStyles } from "./tc_style.js";
 import { hookAllNodes, hookNode, installObservers } from "./tc_attach.js";
 import { installSettingsButton, openSettings } from "./tc_settings.js";
@@ -58,6 +58,9 @@ if (!app) {
         toast("标签数据加载失败", String(error), "error");
       }
 
+      /* usage counts are needed on every keystroke - fetch the table once */
+      loadUsageMap().catch(() => {});
+
       hookAllNodes();
       installObservers();
       try {
@@ -75,10 +78,7 @@ if (!app) {
 
       const tags = state.allTags.length;
       const loras = state.loras.length;
-      const wildcards = state.wildcards.length;
-      console.log(
-        `[TagComplete] ready - ${tags} tags (${CFG.tagFile}), ${loras} loras, ${wildcards} wildcard files`
-      );
+      console.log(`[TagComplete] ready - ${tags} tags (${CFG.tagFile}), ${loras} loras`);
     },
 
     nodeCreated(node) {

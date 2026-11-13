@@ -76,7 +76,6 @@ export const DEFAULT_CFG = {
   extraFile: "extra-quality-tags.csv",
   extraAddMode: "Insert before",
   chantFile: "demo-chants.json",
-  wcWrap: "__",
 
   /* where completion is active */
   enabled: true,
@@ -101,10 +100,6 @@ export const DEFAULT_CFG = {
   popupScale: 1.45,
 
   /* tag-likes */
-  useWildcards: true,
-  sortWildcardResults: true,
-  wildcardCompletionMode: "To next folder level",
-  wildcardPaths: [],
   useEmbeddings: true,
   includeEmbeddingsInNormalResults: false,
   embeddingInsertFormat: "embedding:name",
@@ -138,8 +133,6 @@ export const DEFAULT_CFG = {
   frequencyFunction: "Logarithmic (weak)",
   frequencyMinCount: 3,
   frequencyMaxAge: 30,
-  frequencyRecommendCap: 10,
-  frequencyIncludeAlias: false,
 
   /* advanced */
   keymap: { ...KEYMAP_DEFAULT },
@@ -152,10 +145,6 @@ export const ResultType = Object.freeze({
   tag: 1,
   extra: 2,
   embedding: 3,
-  wildcardTag: 4,
-  wildcardFile: 5,
-  yamlWildcard: 6,
-  umiWildcard: 7,
   hypernetwork: 8,
   lora: 9,
   lyco: 10,
@@ -187,11 +176,8 @@ export const state = {
   allTagsLoaded: false,
   tagFileLoading: null,
   translations: new Map(),
+  translationsAreCJK: false,
   extras: [],
-  wildcards: [],
-  extWildcards: [],
-  yamlWildcards: {},
-  umiTags: [],
   embeddings: [],
   hypernets: [],
   loras: [],
@@ -204,8 +190,6 @@ export const state = {
   serverSettings: {},
 
   /* parsing state */
-  previousTags: [],
-  umiPreviousTags: [],
   tagword: "",
   originalTagword: "",
   results: [],
@@ -229,8 +213,8 @@ export const state = {
   chantCache: new Map(),
   keywordCache: new Map(),
   modelInfoCache: new Map(),
+  /* usage counts, loaded once and kept current on the fly: `${name}\0${type}` -> {pos, neg, last} */
   usageMap: new Map(),
-  lastStyleRefresh: 0,
 };
 
 const configListeners = new Set();
@@ -290,36 +274,10 @@ export async function loadServerConfig() {
 export function applyServerData(data) {
   state.files = data.files || { csv: [], json: [] };
   state.folders = data.folders || {};
-  state.wildcards = Array.isArray(data.wildcards) ? data.wildcards : [];
-  state.yamlWildcards = data.yamlWildcards || {};
-  state.umiTags = (Array.isArray(data.umiTags) ? data.umiTags : []).map((entry) => {
-    const tagSet = {};
-    for (const tag of entry[1] || []) tagSet[String(tag).toLowerCase()] = true;
-    return [entry[0], tagSet, entry[2] || 1];
-  });
   state.embeddings = Array.isArray(data.embeddings) ? data.embeddings : [];
   state.loras = Array.isArray(data.loras) ? data.loras : [];
   state.lycos = Array.isArray(data.lycos) ? data.lycos : [];
   state.hypernets = Array.isArray(data.hypernetworks) ? data.hypernetworks : [];
   state.styles = Array.isArray(data.styles) ? data.styles : [];
-  state.extWildcards = [];
-
-  /* yaml wildcard collections are exposed like normal wildcard files */
-  for (const [file, tree] of Object.entries(state.yamlWildcards || {})) {
-    for (const key of Object.keys(flattenTree(tree))) state.extWildcards.push([file, key]);
-  }
   state.dataLoaded = true;
-}
-
-function flattenTree(tree, prefix = "") {
-  const out = {};
-  for (const [key, value] of Object.entries(tree || {})) {
-    const path = prefix ? `${prefix}/${key}` : key;
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      Object.assign(out, flattenTree(value, path));
-    } else {
-      out[path] = value;
-    }
-  }
-  return out;
 }

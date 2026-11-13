@@ -3,19 +3,16 @@
 Port of the A1111 extension ``a1111-sd-webui-tagcomplete`` to ComfyUI.
 
 It adds booru style tag autocompletion (Danbooru / e621 / derpibooru / custom CSV),
-aliases, translations, extra tag files, wildcards, embeddings, LoRAs, LyCORIS,
-hypernetworks, chants, UMI conditionals, artist tags, live translation, usage
-based sorting and previews - directly inside the text widgets of the CLIP text
-encoder nodes.
+aliases, translations, extra tag files, embeddings, LoRAs, LyCORIS, hypernetworks,
+chants, artist tags, live translation, usage based sorting and previews - directly
+inside the text widgets of the CLIP text encoder nodes.
 
-The Python side only serves data (tag files, wildcard listings, model listings,
-previews, usage database). The completion engine itself runs in the browser and
-lives in ``web/``.
+The Python side only serves data (tag files, model listings, previews, usage
+database). The completion engine itself runs in the browser and lives in ``web/``.
 """
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -38,14 +35,10 @@ try:
     import tc_routes  # noqa: F401  - registers the aiohttp endpoints on import
     import tc_data
 
-    _files = tc_data.list_tag_files()
-    log(
-        "loaded -",
-        f"{len(_files['csv'])} tag files,",
-        f"{len(tc_data.scan_loras())} loras,",
-        f"{len(tc_data.scan_embeddings())} embeddings,",
-        f"{len(tc_data.scan_wildcards()['wildcards'])} wildcards",
-    )
+    # Only the (cheap) tag file listing is done here. The library scan
+    # (loras / embeddings / previews) runs on the first /tagcomplete/data
+    # request in a worker thread, so it never delays ComfyUI startup.
+    log("loaded -", f"{len(tc_data.list_tag_files()['csv'])} tag files")
 except Exception as exc:  # noqa: BLE001
     print("[TagComplete] failed to register backend:", exc)
 

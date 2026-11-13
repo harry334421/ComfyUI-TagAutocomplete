@@ -1,7 +1,6 @@
 /**
- * Completion engine: tag search, tag-like parsers (wildcards, embeddings,
- * LoRAs, chants, UMI, styles, artist tags), popup rendering, keyboard
- * navigation and insertion.
+ * Completion engine: tag search, tag-like parsers (embeddings, LoRAs, chants,
+ * styles, artist tags), popup rendering, keyboard navigation and insertion.
  *
  * Port of the A1111 extension's tagAutocomplete.js + ext_*.js parsers,
  * adapted to ComfyUI canvas nodes and DOM text widgets.
@@ -9,7 +8,7 @@
 
 import { apiURL, getApp, postJSON } from "./tc_env.js";
 import { CFG, ResultType, AutocompleteResult, state } from "./tc_config.js";
-import { ensureExtras, fetchModelInfo, fetchModelKeywords } from "./tc_data.js";
+import { bumpUsage, clearUsage, ensureExtras, fetchModelInfo, fetchModelKeywords, usageCount } from "./tc_data.js";
 import {
   clamp,
   difference,
@@ -28,34 +27,16 @@ const POINTY_REGEX = /<[^\s,<](?:[^\t\n\r,<>]*>|[^\t\n\r,> ]*)/g;
 /* ASCII + full-width separators are used so Chinese punctuation also splits tags */
 const NORMAL_TAG_REGEX = /[^\s,|<>\[\]:，、]+_\([^\s,|<>\[\]:，、]*\)?|[^\s,|<>():\[\]，、]+|</g;
 const RUBY_TAG_REGEX = /[\w\d<][\w\d' \-?!/$%]{2,}>?/g;
-const UMI_PROMPT_REGEX = /<[^\s]*?\[[^,<>]*[\]|]?>?/gi;
-const UMI_TAG_REGEX = /(?:\[|\||--)([^<>\[\]\-|]+)/gi;
-
-function wcWrap() {
-  return CFG.wcWrap || "__";
-}
+/* any CJK / full-width character: only then is a translation or alias search useful */
+const CJK_REGEX = /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/;
 
 function tagRegex() {
-  const wrap = escapeRegExp(wcWrap());
-  const completedWildcard = "__[^\\s,_][^\\t\\n\\r,_]*[^\\s,_]__[^\\s,_]*".replaceAll("__", wrap);
-  return new RegExp(`${POINTY_REGEX.source}|${completedWildcard}|${NORMAL_TAG_REGEX.source}`, "g");
+  return new RegExp(`${POINTY_REGEX.source}|${NORMAL_TAG_REGEX.source}`, "g");
 }
 
 /* ------------------------------------------------------------------------- *
  * Trigger conditions (state.tagword is the fragment being completed)
  * ------------------------------------------------------------------------- */
-const WC_FILE_TRIGGER = () =>
-  CFG.useWildcards &&
-  ((String(state.tagword).startsWith(wcWrap()) && !String(state.tagword).endsWith(wcWrap())) ||
-    state.tagword === wcWrap());
-
-const WC_TRIGGER = () => {
-  if (!CFG.useWildcards) return false;
-  const re = new RegExp("__([^,]+)__([^, ]*)".replaceAll("__", escapeRegExp(wcWrap())), "g");
-  return [...String(state.tagword).matchAll(re)].length > 0;
-};
-
-const EMB_REGEX = /<(?!l:|h:|c:)[^,> ]*>?/g;
 const EMB_TRIGGER = () =>
   CFG.useEmbeddings && (/<(?!l:|h:|c:)[^,> ]*>?/.test(String(state.tagword)) || CFG.includeEmbeddingsInNormalResults);
 
@@ -207,91 +188,6 @@ class BaseTagParser {
 }
 
 const PARSERS = [];
-
-class WildcardFileParser extends BaseTagParser {
-  parse() {
-    const files = [...state.wildcards, ...state.extWildcards];
-    const needle = state.tagword === wcWrap() ? "" : state.tagword.replace(wcWrap(), "");
-    const filtered = needle
-      ? files.filter((entry) => String(entry[1]).toLowerCase().includes(needle.toLowerCase()))
-      : files;
-
-    const finalResults = [];
-    const added = new Set();
-    for (const entry of filtered) {
-      const name = String(entry[1] || "").trim();
-      if (!name || added.has(name)) continue;
-      let result;
-      if (String(entry[0]).toLowerCase().endsWith(".yaml") || String(entry[0]).toLowerCase().endsWith(".yml")) {
-        result = new AutocompleteResult(name, ResultType.yamlWildcard);
-        result.meta = "YAML wildcard";
-      } else {
-        result = new AutocompleteResult(name, ResultType.wildcardFile);
-        result.meta = "Wildcard";
-        result.sortKey = entry[2];
-      }
-      finalResults.push(result);
-      added.add(name);
-    }
-    finalResults.sort(getSortFunction());
-    return finalResults;
-  }
-}
-
-class WildcardParser extends BaseTagParser {
-  async parse() {
-    const re = new RegExp(`__([^,]+)__([^, ]*)`.replaceAll("__", escapeRegExp(wcWrap())), "g");
-    const match = [...state.tagword.matchAll(re)];
-    if (!match.length) return [];
-    const wcFile = match[0][1];
-    const wcWord = match[0][2] || "";
-
-    const found = state.wildcards.filter((entry) => String(entry[1]).toLowerCase() === String(wcFile).toLowerCase());
-    const pairs = found.length
-      ? found
-      : state.extWildcards.filter((entry) => String(entry[1]).toLowerCase() === String(wcFile).toLowerCase());
-    if (!pairs.length) return [];
-
-    let wildcards = [];
-    for (const [basePath, fileName] of pairs) {
-      if (!basePath || !fileName) continue;
-      if (String(basePath).toLowerCase().endsWith(".yaml") || String(basePath).toLowerCase().endsWith(".yml")) {
-        let node = state.yamlWildcards[basePath];
-        for (const part of String(fileName).split("/")) {
-          node = node?.[part];
-          if (node === undefined) break;
-        }
-        const values = Array.isArray(node) ? node : typeof node === "string" ? [node] : [];
-        wildcards = wildcards.concat(values.map((value) => String(value)));
-      } else {
-        try {
-          const url = apiURL(
-            `/tagcomplete/wildcard?base=${encodeURIComponent(basePath)}&file=${encodeURIComponent(`${fileName}.txt`)}`
-          );
-          const response = await fetch(url, { cache: "no-store" });
-          if (!response.ok) continue;
-          const text = await response.text();
-          wildcards = wildcards.concat(
-            text
-              .split("\n")
-              .map((line) => line.trim())
-              .filter((line) => line.length > 0 && !line.startsWith("#"))
-          );
-        } catch (error) {
-          console.warn("[TagComplete] could not read wildcard file:", error);
-        }
-      }
-    }
-
-    if (CFG.sortWildcardResults) wildcards.sort((a, b) => a.localeCompare(b));
-    const filtered = wcWord ? wildcards.filter((item) => item.toLowerCase().includes(wcWord.toLowerCase())) : wildcards;
-    return filtered.map((item) => {
-      const result = new AutocompleteResult(item.trim(), ResultType.wildcardTag);
-      result.meta = wcFile;
-      return result;
-    });
-  }
-}
 
 class EmbeddingParser extends BaseTagParser {
   parse() {
@@ -473,124 +369,6 @@ class ArtistTagParser extends BaseTagParser {
   }
 }
 
-class UmiParser extends BaseTagParser {
-  parse(target, prompt) {
-    const subPrompts = [...String(prompt).matchAll(UMI_PROMPT_REGEX)];
-    if (!subPrompts.length) return [];
-
-    let umiTags = [];
-    let umiTagsWithOperators = "";
-
-    for (const sub of subPrompts) {
-      umiTags = umiTags.concat([...sub[0].matchAll(UMI_TAG_REGEX)].map((m) => String(m[1]).trim().toLowerCase()));
-      const start = sub.index ?? 0;
-      const end = start + sub[0].length;
-      const cursor = target.el.selectionStart;
-      if (cursor >= start && cursor <= end) {
-        const offset = cursor - start;
-        umiTagsWithOperators = sub[0].slice(0, offset) + "###" + sub[0].slice(offset);
-      }
-    }
-
-    if (!umiTagsWithOperators.length) return [];
-
-    const clean = (str) =>
-      String(str).replaceAll(">", "").replaceAll("<", "").replaceAll("[", "").replaceAll("]", "").trim();
-
-    const parts = umiTagsWithOperators.replace("]###[", "][").split("][");
-    const matches = parts.reduce(
-      (acc, current) => {
-        const isOptional = current.includes("|");
-        const isNegative = current.startsWith("--");
-        if (isOptional) {
-          const tags = clean(current)
-            .split("|")
-            .map((piece) => ({
-              hasCursor: piece.includes("###"),
-              isNegative: piece.startsWith("--"),
-              tag: clean(piece).replaceAll("###", "").replaceAll("--", ""),
-            }));
-          acc.optional.push({ hasCursor: current.includes("###"), tags });
-          acc.all.push(...tags.map((tag) => tag.tag));
-        } else {
-          const tags = clean(current)
-            .replaceAll("###", "")
-            .split("|")
-            .map((piece) => (piece.startsWith("--") ? piece.substring(2) : piece));
-          if (isNegative) acc.negative.push({ hasCursor: current.includes("###"), tags });
-          else acc.positive.push({ hasCursor: current.includes("###"), tags });
-          acc.all.push(...tags);
-        }
-        return acc;
-      },
-      { positive: [], negative: [], optional: [], all: [] }
-    );
-
-    const filtered = (word) => {
-      const counts = {};
-      for (const entry of state.umiTags) {
-        const name = entry[0];
-        const tagSet = entry[1] || {};
-        const matchesNeg =
-          matches.negative.length === 0 ||
-          matches.negative.every((item) => item.hasCursor || item.tags.every((tag) => !tagSet[tag]));
-        if (!matchesNeg) continue;
-        const matchesPos =
-          matches.positive.length === 0 ||
-          matches.positive.every((item) => item.hasCursor || item.tags.every((tag) => tagSet[tag]));
-        if (!matchesPos) continue;
-        const matchesOpt =
-          matches.optional.length === 0 ||
-          matches.optional.some((item) =>
-            item.tags.some((tag) => (tag.hasCursor || tag.isNegative ? !tagSet[tag.tag] : tagSet[tag.tag]))
-          );
-        if (!matchesOpt) continue;
-        counts[name] = (counts[name] || 0) + (entry[2] || 1);
-      }
-      return Object.entries(counts)
-        .sort((a, b) => b[1] - a[1])
-        .filter(([name]) => name === word || !matches.all.includes(name));
-    };
-
-    const tagCountChange = umiTags.length - target.umiPreviousTags.length;
-    const diff = difference(umiTags, target.umiPreviousTags);
-    target.umiPreviousTags = umiTags;
-
-    const showAll = state.tagword.endsWith("[") || state.tagword.endsWith("[--") || state.tagword.endsWith("|");
-    if ((!diff || diff.length === 0 || (diff.length === 1 && tagCountChange < 0)) && !showAll) {
-      if (!state.hideBlocked) hidePopup(target);
-      return [];
-    }
-
-    let umiTagword = tagCountChange < 0 ? "" : diff[0] || "";
-    let entries;
-    if (umiTagword && umiTagword.length > 0) {
-      umiTagword = umiTagword.toLowerCase().replace(/[\n\r]/g, "");
-      state.originalTagword = state.tagword;
-      state.tagword = umiTagword;
-      entries = filtered(umiTagword);
-      const searchRegex = new RegExp(`(^|[^a-zA-Z])${escapeRegExp(umiTagword)}`, "i");
-      entries = entries.filter(
-        ([name]) =>
-          name.toLowerCase().search(searchRegex) > -1 ||
-          name.toLowerCase().replaceAll(" ", "_").search(searchRegex) > -1
-      );
-    } else {
-      entries = filtered("");
-      state.originalTagword = state.tagword;
-      state.tagword = "";
-    }
-
-    return entries
-      .map(([name, count]) => {
-        const result = new AutocompleteResult(String(name).trim(), ResultType.umiWildcard);
-        result.count = count;
-        return result;
-      })
-      .sort((a, b) => b.count - a.count);
-  }
-}
-
 /* ------------------------------------------------------------------------- *
  * Sorting
  * ------------------------------------------------------------------------- */
@@ -671,9 +449,16 @@ function searchTagList(query) {
   needle = needle.toLowerCase();
 
   const aliasSearch = CFG.alias.searchByAlias || CFG.alias.onlyShowAlias;
-  const translationSearch = CFG.translation.searchByTranslation;
   const translations = state.translations;
-  const useTranslations = translationSearch && translations && translations.size > 0;
+  /*
+   * Only a CJK / full-width query can match a translation, and checking that
+   * per row is expensive (one Map lookup plus a regex per row, 350k rows).
+   * Plain ASCII typing therefore skips translation search entirely.
+   */
+  const useTranslations =
+    CFG.translation.searchByTranslation &&
+    translations.size > 0 &&
+    (!state.translationsAreCJK || CJK_REGEX.test(needle));
 
   const matchesTranslation = (row) => {
     const direct = translations.get(row[0]);
@@ -729,16 +514,8 @@ function searchExtras(query) {
   return results;
 }
 
-async function getUseCounts(names, types, negative) {
-  try {
-    const response = await postJSON("/tagcomplete/frequency/counts", { names, types, neg: negative });
-    return (response?.result || []).map((row) => ({ name: row[0], type: row[1], count: row[2], lastUseDate: row[3] }));
-  } catch {
-    return [];
-  }
-}
-
 function increaseUseCount(name, type, negative) {
+  bumpUsage(name, type, negative);
   postJSON(
     `/tagcomplete/frequency/increase?name=${encodeURIComponent(name)}&type=${encodeURIComponent(type)}&neg=${
       negative ? "1" : "0"
@@ -748,6 +525,7 @@ function increaseUseCount(name, type, negative) {
 }
 
 function resetUseCount(name, type, positive, negative) {
+  clearUsage(name, type, positive, negative);
   postJSON(
     `/tagcomplete/frequency/reset?name=${encodeURIComponent(name)}&type=${encodeURIComponent(type)}&pos=${
       positive ? "1" : "0"
@@ -842,10 +620,7 @@ export async function autocomplete(target, prompt, fixedTag = null) {
   }
 
   if (parsed && parsed.length) {
-    results = parsed.flat();
-    if (!(parsed.length === 1 && results[0]?.type === ResultType.umiWildcard)) {
-      results = results.sort(getSortFunction());
-    }
+    results = parsed.flat().sort(getSortFunction());
   }
 
   const afterParsers = state.tagword;
@@ -880,23 +655,11 @@ export async function autocomplete(target, prompt, fixedTag = null) {
   }
 
   if (CFG.frequencySort) {
-    const aliasTypes = [ResultType.tag, ResultType.extra];
-    const names = [];
-    const types = [];
     const negative = isNegativeTarget(target);
-    for (const result of results.slice(0, 2000)) {
-      const name = result.type === ResultType.chant ? result.aliases : result.text;
-      const keep = !(aliasTypes.includes(result.type) && !String(name).includes(state.tagword));
-      if (keep) names.push(name);
-      types.push(result.type);
-    }
-    const counts = await getUseCounts(names, types, negative);
-    const countMap = new Map();
-    for (const entry of counts) countMap.set(`${entry.name}\u0000${entry.type}`, entry.count || 0);
     const bias = new Map();
     for (const result of results) {
       const name = result.type === ResultType.chant ? result.aliases : result.text;
-      const uses = countMap.get(`${name}\u0000${result.type}`) || 0;
+      const uses = usageCount(name, result.type, negative);
       bias.set(result, calculateUsageBias(result, parseInt(result.count, 10) || 0, uses));
     }
     results = results.sort((a, b) => bias.get(b) - bias.get(a));
@@ -963,22 +726,26 @@ function formatDisplayText(result, tagword) {
     const aliases = String(result.aliases).split(",");
     let bestAlias = aliases.find((alias) => alias.toLowerCase().includes(tagword));
     if (!bestAlias && translations.size) {
-      const hit = [...translations].find(
-        (pair) => (pair[0] === result.text || aliases.includes(pair[0])) && String(pair[1]).includes(tagword)
-      );
-      if (hit) bestAlias = hit[0];
+      /* only this row's own names can be the hit - no need to walk the whole map */
+      for (const candidate of [result.text, ...aliases]) {
+        const translation = translations.get(candidate);
+        if (translation && String(translation).includes(tagword)) {
+          bestAlias = candidate;
+          break;
+        }
+      }
     }
     if (!bestAlias) bestAlias = result.text;
     displayText = escapeHTML(bestAlias);
     if (translations.has(bestAlias) && translations.get(bestAlias) !== bestAlias && bestAlias !== result.text) {
-      displayText += `[${translations.get(bestAlias)}]`;
+      displayText += `[${escapeHTML(translations.get(bestAlias))}]`;
     }
-    if (!CFG.alias.onlyShowAlias && result.text !== bestAlias) displayText += ` ➝ ${result.text}`;
+    if (!CFG.alias.onlyShowAlias && result.text !== bestAlias) displayText += ` ➝ ${escapeHTML(result.text)}`;
   } else {
     displayText = escapeHTML(result.text);
   }
 
-  if (translations.has(result.text)) displayText += `[${translations.get(result.text)}]`;
+  if (translations.has(result.text)) displayText += `[${escapeHTML(translations.get(result.text))}]`;
 
   if (tagword) {
     const index = displayText.toLowerCase().indexOf(tagword.toLowerCase());
@@ -1064,13 +831,6 @@ export function renderResults(target, results, tagword, reset) {
     itemText.className = "tac-item";
     itemText.innerHTML = formatDisplayText(result, tagword);
 
-    if ([ResultType.wildcardFile, ResultType.yamlWildcard].includes(result.type) && itemText.innerHTML.includes("/")) {
-      const parts = itemText.innerHTML.split("/");
-      const last = parts.pop();
-      itemText.innerHTML =
-        parts.map((part) => `<span class="tac-path-part">${part}</span>`).join("/") + "/" + last;
-    }
-
     const color = categoryColor(result);
     if (color) flex.style.color = color;
 
@@ -1097,34 +857,29 @@ export function renderResults(target, results, tagword, reset) {
 
     flex.appendChild(itemText);
 
+    let metaEl = null;
     if (result.count && !Number.isNaN(result.count) && result.count !== Number.MAX_SAFE_INTEGER) {
-      const countDiv = document.createElement("div");
-      countDiv.className = "tac-meta";
-      countDiv.textContent = formatCount(parseInt(result.count, 10) || 0);
-      flex.appendChild(countDiv);
+      metaEl = document.createElement("div");
+      metaEl.className = "tac-meta";
+      metaEl.textContent = formatCount(parseInt(result.count, 10) || 0);
+      flex.appendChild(metaEl);
     } else if (result.meta) {
-      const metaDiv = document.createElement("div");
-      metaDiv.className = "tac-meta";
-      metaDiv.textContent = result.meta;
-      flex.appendChild(metaDiv);
+      metaEl = document.createElement("div");
+      metaEl.className = "tac-meta";
+      metaEl.textContent = result.meta;
+      flex.appendChild(metaEl);
     }
 
-    if (result.usageBias) {
-      const meta = flex.querySelector(".tac-meta");
-      if (meta) {
-        meta.classList.add("biased");
-        flex.title = "✨ 常用标签（Ctrl/Cmd + 点击可重置使用次数）";
-      }
+    if (result.usageBias && metaEl) {
+      metaEl.classList.add("biased");
+      flex.title = "✨ 常用标签（Ctrl/Cmd + 点击可重置使用次数）";
     }
 
-    if (usedTags[result.text] && !(result.text === tagword && usedTags[result.text] === 1)) {
-      const meta = flex.querySelector(".tac-meta");
-      if (meta) {
-        const span = document.createElement("span");
-        span.className = "used";
-        span.title = "🔁 提示词中已包含该标签";
-        meta.insertBefore(span, meta.firstChild);
-      }
+    if (usedTags[result.text] && !(result.text === tagword && usedTags[result.text] === 1) && metaEl) {
+      const span = document.createElement("span");
+      span.className = "used";
+      span.title = "🔁 提示词中已包含该标签";
+      metaEl.insertBefore(span, metaEl.firstChild);
     }
 
     li.addEventListener("mousedown", (event) => event.preventDefault());
@@ -1179,14 +934,7 @@ function highlight(target, index, previousIndex, scroll = true) {
 /* ------------------------------------------------------------------------- *
  * Insertion
  * ------------------------------------------------------------------------- */
-const NO_COMMA_TYPES = [
-  ResultType.wildcardFile,
-  ResultType.yamlWildcard,
-  ResultType.umiWildcard,
-  ResultType.hypernetwork,
-  ResultType.lora,
-  ResultType.lyco,
-];
+const NO_COMMA_TYPES = [ResultType.hypernetwork, ResultType.lora, ResultType.lyco];
 
 async function multiplierFor(kind, name) {
   let multiplier = CFG.extraNetworksDefaultMultiplier;
@@ -1211,12 +959,7 @@ async function sanitizeResult(result) {
   switch (result.type) {
     case ResultType.embedding:
       return formatEmbeddingName(text);
-    case ResultType.wildcardFile:
-    case ResultType.yamlWildcard:
-      return `${wcWrap()}${text}${wcWrap()}`;
-    case ResultType.wildcardTag:
     case ResultType.chant:
-    case ResultType.umiWildcard:
       return text;
     case ResultType.styleName:
       return text.includes(" ") ? `$${lastStyleVarIndex}(${text})` : `$${lastStyleVarIndex}${text}`;
@@ -1235,7 +978,7 @@ async function sanitizeResult(result) {
   }
 }
 
-export async function insertResult(target, result, tagword, tabCompletedWithoutChoice = false) {
+export async function insertResult(target, result, tagword) {
   const el = target.el;
   const type = result.type;
   let sanitizedText = result.text;
@@ -1265,55 +1008,8 @@ export async function insertResult(target, result, tagword, tabCompletedWithoutC
     sanitizedText = `@${sanitizedText}`;
   }
 
-  if (
-    (type === ResultType.wildcardFile || type === ResultType.yamlWildcard) &&
-    tabCompletedWithoutChoice &&
-    CFG.wildcardCompletionMode !== "Always fully" &&
-    sanitizedText.includes("/")
-  ) {
-    if (CFG.wildcardCompletionMode === "To next folder level") {
-      const match = sanitizedText.match(new RegExp(`${escapeRegExp(tagword)}([^/]*\\/?)`, "i"));
-      if (match) {
-        let part = match[0];
-        if (part === `${tagword}/`) {
-          const deeper = sanitizedText.match(new RegExp(`${escapeRegExp(tagword)}\\/([^/]*\\/?)`, "i"));
-          if (deeper) part = deeper[0];
-        }
-        sanitizedText = part;
-      }
-    } else if (CFG.wildcardCompletionMode === "To first difference") {
-      const results = target.results || [];
-      if (results.length) {
-        const longest = results.reduce((max, item) => Math.max(max, String(item.text).length), 0);
-        let firstDifference = 0;
-        for (let i = 0; i < longest; i++) {
-          const char = String(results[0].text)[i];
-          if (results.every((item) => String(item.text)[i] === char)) firstDifference++;
-          else break;
-        }
-        if (firstDifference > 0 && firstDifference < longest) {
-          sanitizedText = sanitizedText.substring(0, firstDifference + wcWrap().length);
-        } else if (firstDifference === 0) {
-          sanitizedText = tagword;
-        }
-      }
-    }
-  }
-
   if (CFG.frequencySort) {
-    let name = null;
-    switch (type) {
-      case ResultType.wildcardFile:
-      case ResultType.yamlWildcard:
-        if (String(sanitizedText).endsWith(wcWrap())) name = result.text;
-        break;
-      case ResultType.chant:
-        name = result.aliases;
-        break;
-      default:
-        name = result.text;
-        break;
-    }
+    const name = type === ResultType.chant ? result.aliases : result.text;
     if (name && String(name).length > 0) increaseUseCount(name, type, isNegativeTarget(target));
   }
 
@@ -1374,28 +1070,6 @@ export async function insertResult(target, result, tagword, tabCompletedWithoutC
   el.selectionStart = afterInsertCursorPos + optionalSeparator.length + keywordsLength;
   el.selectionEnd = el.selectionStart;
 
-  if ([ResultType.wildcardFile, ResultType.yamlWildcard, ResultType.umiWildcard].includes(type)) {
-    state.selfTrigger = true;
-  }
-
-  if (type === ResultType.wildcardFile || type === ResultType.yamlWildcard) {
-    state.hideBlocked = true;
-    setTimeout(() => {
-      state.hideBlocked = false;
-    }, 450);
-    return;
-  }
-
-  if (type === ResultType.umiWildcard && state.originalTagword.length > 0) {
-    let umiTags = [];
-    for (const sub of newPrompt.matchAll(UMI_PROMPT_REGEX)) {
-      umiTags = umiTags.concat([...sub[0].matchAll(UMI_TAG_REGEX)].map((m) => String(m[1]).trim().toLowerCase()));
-    }
-    target.umiPreviousTags = umiTags;
-    hidePopup(target);
-    return;
-  }
-
   target.previousTags = tagsFromPrompt(newPrompt);
   hidePopup(target);
 }
@@ -1414,6 +1088,8 @@ export function commitValue(target, text) {
   } catch {
     const event = document.createEvent("Event");
     event.initEvent("input", true, false);
+    /* the fallback event carries no inputType, so flag it as a programmatic edit */
+    state.selfTrigger = true;
     el.dispatchEvent(event);
   }
 
@@ -1612,15 +1288,9 @@ export function navigateInList(target, event) {
       }
       break;
     case keys.ChooseFirstOrSelected: {
-      let withoutChoice = false;
-      if (target.selected === null) {
-        target.selected = 0;
-        withoutChoice = true;
-      } else if (CFG.wildcardCompletionMode === "To next folder level") {
-        withoutChoice = true;
-      }
+      if (target.selected === null) target.selected = 0;
       if (results[target.selected]) {
-        insertResult(target, results[target.selected], target.tagword || state.tagword, withoutChoice).catch((error) =>
+        insertResult(target, results[target.selected], target.tagword || state.tagword).catch((error) =>
           console.warn("[TagComplete]", error)
         );
       }
@@ -1701,7 +1371,6 @@ export function attachToTextarea(el, widget, node) {
     widget,
     node,
     previousTags: [],
-    umiPreviousTags: [],
     selected: null,
     oldSelected: null,
     results: [],
@@ -1761,15 +1430,10 @@ export function resetState() {
 }
 
 /* Parser registration */
-PARSERS.push(new WildcardFileParser(WC_FILE_TRIGGER));
-PARSERS.push(new WildcardParser(WC_TRIGGER));
 PARSERS.push(new EmbeddingParser(EMB_TRIGGER));
 PARSERS.push(new LoraParser(LORA_TRIGGER));
 PARSERS.push(new LycoParser(LYCO_TRIGGER));
 PARSERS.push(new HypernetParser(HYP_TRIGGER));
 PARSERS.push(new ChantParser(CHANT_TRIGGER));
 PARSERS.push(new StyleParser(STYLE_TRIGGER));
-PARSERS.push(
-  new UmiParser(() => CFG.useWildcards && [...String(state.tagword).matchAll(UMI_PROMPT_REGEX)].length > 0)
-);
 PARSERS.push(new ArtistTagParser(ARTIST_TAG_TRIGGER));

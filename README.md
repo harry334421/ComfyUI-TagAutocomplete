@@ -44,7 +44,6 @@ version. No extra node, no separate window.
 Tag completion supports:
 
 - 🏷️ **Danbooru & e621 tags** (post counts, aliases, categories)
-- ✨ **Wildcards** (`__file__`, nested folders, YAML collections, UMI conditionals)
 - 🔗 **Extra networks**: Textual Inversion embeddings, LoRAs, LyCORIS/LoHa, hypernetworks
 - 🎵 **Chants** (long prompt presets)
 - 🏷️ **Extra file**, one set of customizable extra tags
@@ -73,8 +72,8 @@ All 56 options are registered through `app.ui.settings.addSetting()` and appear 
 | Result display | max results, show all, step length, delay, follow caret, wiki links, previews, sort order |
 | Popup appearance | **width, row height, font size, overall scale** (new in this port) |
 | Search & translation | search by alias, only show alias, search by translation, live translation |
-| Insertion | underscores, escaping, comma/space, artist `@`, wildcard path mode, trigger words |
-| Wildcards & models | wildcards/YAML, embeddings (+ insert format), LoRA, LyCORIS, hypernet, styles, weight, separator |
+| Insertion | underscores, escaping, comma/space, artist `@`, trigger words |
+| Models & tags | embeddings (+ insert format), LoRA, LyCORIS, hypernet, styles, weight, separator |
 | Usage sorting | enable, function, min count, max age, recommend cap, aliases |
 
 Changes apply immediately and are stored in ComfyUI's own `comfy.settings.json`
@@ -96,13 +95,11 @@ Insertion now produces what ComfyUI actually understands:
 - LoRAs → `<lora:name:weight>` (works with `comfyui-prompt-extranetworks`,
   `comfyui-prompt-control`, rgthree power prompts, …), weight taken from the model's
   sidecar `.json` or its safetensors metadata
-- wildcards → `__file__` (comfyui-dynamicprompts, Impact Pack, Umi AI)
 
 ### 5. Library scanning through ComfyUI itself
 Extra networks are read with `folder_paths` (`get_filename_list`), so
 `extra_model_paths.yaml`, symlinks and junctions are all respected — a 5.7k LoRA
-library is listed in ~0.1 s. Wildcard folders are auto-scanned from
-`custom_nodes/*/wildcards`, `<ComfyUI>/wildcards` and this package's `wildcards/`.
+library is listed in ~0.1 s and the result is cached for a few minutes.
 
 ### 6. Chinese out of the box
 The repository ships a ready configuration (`settings.default.json`):
@@ -134,7 +131,7 @@ hard-refresh the browser (<kbd>Ctrl</kbd>+<kbd>F5</kbd>).
 ### Manual (git)
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/Kerrybuck-17/ComfyUI-TagAutocomplete.git
+git clone https://github.com/harry334421/ComfyUI-TagAutocomplete.git
 ```
 Restart ComfyUI afterwards.
 
@@ -143,7 +140,7 @@ Download the repository as zip, extract it into `ComfyUI/custom_nodes/` so that
 `__init__.py` sits directly inside `custom_nodes/ComfyUI-TagAutocomplete/`.
 
 The bundled tag data lives in `tags/` (about 37 MB) and is required for normal tag
-completion. Without it only wildcards / LoRAs / embeddings would work.
+completion. Without it only LoRAs / embeddings / chants would work.
 
 <br/>
 
@@ -156,7 +153,6 @@ completion. Without it only wildcards / LoRAs / embeddings would work.
    - clicking inserts as well, <kbd>Ctrl</kbd> + click resets the usage count of that tag
 2. Trigger characters:
    - `<` → embeddings / LoRAs / chants (`<l:`, `<lora:`, `<h:`, `<c:` narrow it down)
-   - `__` → wildcard files; after choosing one, press <kbd>Tab</kbd> again to list its contents
    - `@` → artist tags (enable in settings)
    - `$` → style variables (enable in settings)
 3. Settings: **gear icon → 🏷️ Tag 自动补全** (or the 🏷️ button in the bottom right corner).
@@ -164,15 +160,6 @@ completion. Without it only wildcards / LoRAs / embeddings would work.
 <br/>
 
 # ❇️ Additional completion support
-
-## Wildcards
-Completion triggers on `__` (double underscore). It lists the wildcard files found in
-`custom_nodes/*/wildcards`, `<ComfyUI>/wildcards` and `ComfyUI-TagAutocomplete/wildcards/`,
-and after choosing a file the replacement lines inside it. Use <kbd>Tab</kbd> for partial
-path completion (to the next folder level / to the first difference / always fully).
-
-YAML wildcard collections (`*.yaml` / `*.yml`, dynamic-prompts format) and
-[Umi AI](https://github.com/Klokinator/Umi-Format) `Tags:` lists are supported as well.
 
 ## Extra networks (Embeddings, Hypernets, LoRA, …)
 Typing `<` lists embeddings (`<e:`), LoRAs (`<l:` / `<lora:`) and hypernetworks (`<h:`).
@@ -252,7 +239,7 @@ in the standalone panel.
 | No popup at all | check the node type is a CLIP text encoder; open the browser console and look for `[TagComplete] ready - N tags`; hard-refresh the page |
 | Empty tag list | the selected **tag file** must exist in `tags/` |
 | Chinese input finds nothing | enable **search by translation** and select a Chinese translation file |
-| No wildcards / LoRAs | press **重新扫描通配符 / 模型** in the settings panel |
+| No LoRAs / embeddings | press **重新扫描模型与标签文件** in the settings panel |
 | Two popups | enable **disable pysssss Autocompleter** |
 
 <br/>
@@ -261,7 +248,8 @@ in the standalone panel.
 
 - Original extension, tag data and algorithms:
   [DominikDoom/a1111-sd-webui-tagcomplete](https://github.com/DominikDoom/a1111-sd-webui-tagcomplete) (MIT)
-- ComfyUI port: this repository
+- ComfyUI port: [Kerrybuck-17/ComfyUI-TagAutocomplete](https://github.com/Kerrybuck-17/ComfyUI-TagAutocomplete)
+- Maintained fork with performance and correctness fixes: this repository
 - Tag data sources: [Danbooru](https://danbooru.donmai.us/), [e621](https://e621.net/),
   [derpibooru](https://derpibooru.org/); Chinese translations from the community
   (DraconicDragon/dbr-e621-lists-archive and contributors)

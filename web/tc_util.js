@@ -63,18 +63,18 @@ export function escapeRegExp(string, wildcardMatching = false) {
   return String(string).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function escapeHTML(unsafe) {
-  const div = document.createElement("div");
-  div.textContent = unsafe === null || unsafe === undefined ? "" : String(unsafe);
-  return div.innerHTML;
-}
+const HTML_ESCAPES = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
 
-let dbTimer;
-export function debounce(func, wait = 300) {
-  return function (...args) {
-    if (dbTimer) clearTimeout(dbTimer);
-    dbTimer = setTimeout(() => func.apply(this, args), wait);
-  };
+/** Escape a value for use inside innerHTML (called once per rendered row). */
+export function escapeHTML(unsafe) {
+  if (unsafe === null || unsafe === undefined) return "";
+  return String(unsafe).replace(/[&<>"']/g, (char) => HTML_ESCAPES[char]);
 }
 
 /** Difference of two arrays including duplicate counts. */
@@ -89,39 +89,16 @@ export function difference(a, b) {
   ].reduce((acc, [v, count]) => acc.concat(Array(Math.abs(count)).fill(v)), []);
 }
 
-export function flatten(obj, roots = [], sep = ".") {
-  return Object.keys(obj || {}).reduce(
-    (memo, prop) =>
-      Object.assign(
-        {},
-        memo,
-        Object.prototype.toString.call(obj[prop]) === "[object Object]"
-          ? flatten(obj[prop], roots.concat([prop]), sep)
-          : { [roots.concat([prop]).join(sep)]: obj[prop] }
-      ),
-    {}
-  );
-}
+const COUNT_FORMAT_ONE_DECIMAL = new Intl.NumberFormat("en", {
+  notation: "compact",
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
+const COUNT_FORMAT_COMPACT = new Intl.NumberFormat("en", { notation: "compact" });
 
-export function toNgrams(inputArray, size) {
-  return Array.from({ length: Math.max(0, inputArray.length - (size - 1)) }, (_, index) =>
-    inputArray.slice(index, index + size)
-  );
-}
-
-/** Compact number formatting identical to the Danbooru style used by the original. */
 export function formatCount(postCount) {
-  let formatter;
-  if (postCount >= 1000000 || (postCount >= 1000 && postCount < 10000)) {
-    formatter = new Intl.NumberFormat("en", {
-      notation: "compact",
-      minimumFractionDigits: 1,
-      maximumFractionDigits: 1,
-    });
-  } else {
-    formatter = new Intl.NumberFormat("en", { notation: "compact" });
-  }
-  return formatter.format(postCount);
+  const withDecimal = postCount >= 1000000 || (postCount >= 1000 && postCount < 10000);
+  return (withDecimal ? COUNT_FORMAT_ONE_DECIMAL : COUNT_FORMAT_COMPACT).format(postCount);
 }
 
 export function clamp(value, min, max) {
@@ -246,8 +223,4 @@ export function getCaretCoordinates(element, position) {
 
   document.body.removeChild(div);
   return coordinates;
-}
-
-export function uid() {
-  return `tac${Math.random().toString(36).slice(2, 9)}`;
 }

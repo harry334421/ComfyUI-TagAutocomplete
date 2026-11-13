@@ -105,35 +105,66 @@ export function hookAllNodes() {
   return total;
 }
 
+/* ------------------------------------------------------------------------- *
+ * One shared DOM observer
+ *
+ * ComfyUI creates node widgets slightly after the node itself, so a DOM sweep
+ * is still needed as a safety net. A single MutationObserver serves both the
+ * canvas hook and the side panel sync; listeners are invoked in the same
+ * debounced pass instead of running a second observer and a polling timer.
+ * ------------------------------------------------------------------------- */
+const sweepListeners = new Set();
 let observer = null;
-let pending = null;
+let pendingSweep = null;
+
+/** Register an extra callback that runs after each throttled sweep. */
+export function onSweep(listener) {
+  sweepListeners.add(listener);
+  return () => sweepListeners.delete(listener);
+}
+
+function runSweep() {
+  try {
+    hookAllNodes();
+  } catch (error) {
+    console.warn("[TagComplete] sweep failed:", error);
+  }
+  for (const listener of sweepListeners) {
+    try {
+      listener();
+    } catch (error) {
+      console.warn("[TagComplete] sweep listener failed", error);
+    }
+  }
+}
+
+export function scheduleSweep(delay = 120) {
+  if (pendingSweep) return;
+  pendingSweep = setTimeout(() => {
+    pendingSweep = null;
+    runSweep();
+  }, delay);
+}
 
 export function installObservers() {
   if (observer) return;
   if (typeof MutationObserver === "undefined") return;
 
-  const schedule = () => {
-    if (pending) return;
-    pending = setTimeout(() => {
-      pending = null;
-      try {
-        hookAllNodes();
-      } catch (error) {
-        console.warn("[TagComplete] sweep failed:", error);
-      }
-    }, 120);
-  };
-
   observer = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       for (const added of mutation.addedNodes) {
         if (!(added instanceof HTMLElement)) continue;
-        if (added.tagName === "TEXTAREA" && added.classList.contains("comfy-multiline-input")) {
-          schedule();
+        if (added.tagName === "TEXTAREA") {
+          scheduleSweep();
           return;
         }
-        if (added.querySelector?.("textarea.comfy-multiline-input")) {
-          schedule();
+        /* only node widgets or the right side panel matter; skip the rest of the busy DOM */
+        if (added.classList?.contains("litegraph") || added.querySelector?.("textarea.comfy-multiline-input")) {
+          scheduleSweep();
+          return;
+        }
+        if (added.closest?.('[data-testid="properties-panel"]')) {
+          scheduleSweep();
           return;
         }
       }

@@ -25,11 +25,6 @@ const OPTIONS = {
     ["Date Modified (newest first)", "修改时间（最新在前）"],
     ["Date Modified (oldest first)", "修改时间（最旧在前）"],
   ],
-  wildcardCompletionMode: [
-    ["To next folder level", "补全到下一层目录"],
-    ["To first difference", "补全到第一个差异处"],
-    ["Always fully", "总是补全完整路径"],
-  ],
   modelKeywordCompletion: [
     ["Never", "关闭"],
     ["Only user list", "仅用户列表"],
@@ -155,7 +150,7 @@ export const SETTINGS_SCHEMA = [
       { key: "slidingPopup", label: "弹窗跟随光标移动", type: "bool" },
       { key: "showWikiLinks", label: "显示 wiki 跳转链接（?）", type: "bool" },
       { key: "showExtraNetworkPreviews", label: "显示 LoRA / Embedding 预览图", type: "bool" },
-      { key: "modelSortOrder", label: "模型 / 通配符排序", type: "combo", options: "modelSortOrder" },
+      { key: "modelSortOrder", label: "模型排序", type: "combo", options: "modelSortOrder" },
     ],
   },
   {
@@ -188,25 +183,13 @@ export const SETTINGS_SCHEMA = [
       { key: "alwaysSpaceAtEnd", label: "在文本末尾时总是追加空格", type: "bool" },
       { key: "artistAtTrigger", label: "输入 @ 时显示画师标签", type: "bool" },
       { key: "artistInsertAt", label: "插入画师标签时自动添加 @", type: "bool" },
-      { key: "wildcardCompletionMode", label: "通配符路径补全方式", type: "combo", options: "wildcardCompletionMode" },
       { key: "modelKeywordCompletion", label: "LoRA 触发词自动插入", type: "combo", options: "modelKeywordCompletion" },
       { key: "modelKeywordLocation", label: "触发词插入位置", type: "combo", options: "modelKeywordLocation" },
     ],
   },
   {
-    section: "通配符与模型",
+    section: "模型与标签",
     fields: [
-      { key: "useWildcards", label: "通配符补全", type: "bool" },
-      { key: "sortWildcardResults", label: "通配符内容按字母排序", type: "bool" },
-      {
-        key: "wildcardPaths",
-        label: "额外的通配符目录",
-        type: "textarea",
-        list: true,
-        native: false,
-        reload: "scan",
-        hint: "每行一个绝对路径；修改后会重新扫描（仅在独立面板中编辑）",
-      },
       { key: "useEmbeddings", label: "Embedding 补全", type: "bool" },
       { key: "includeEmbeddingsInNormalResults", label: "把 Embedding 混入普通标签结果", type: "bool" },
       { key: "embeddingInsertFormat", label: "Embedding 插入格式", type: "combo", options: "embeddingInsertFormat" },
@@ -269,8 +252,6 @@ export const SETTINGS_SCHEMA = [
         type: "slider",
         attrs: { min: 0, max: 365, step: 1 },
       },
-      { key: "frequencyRecommendCap", label: "最多推荐的常用标签数量", type: "slider", attrs: { min: 0, max: 50, step: 1 } },
-      { key: "frequencyIncludeAlias", label: "通过别名使用时也计入频率", type: "bool" },
     ],
   },
   {

@@ -143,7 +143,7 @@ function buildDialog() {
   note.className = "tac-section";
   note.innerHTML =
     '<p class="tac-hint" style="margin:0 0 8px">同样的选项也注册在 <b>ComfyUI 设置 → 🏷️ Tag 自动补全</b>，' +
-    "可以直接在那里修改；这里另外提供 JSON 编辑、使用统计和重新扫描。</p>";
+    "可以直接在那里修改；这里另外提供 JSON 编辑、使用统计和手动重扫。</p>";
   body.appendChild(note);
 
   for (const group of SETTINGS_SCHEMA) {
@@ -186,7 +186,7 @@ function buildDialog() {
 
   const refreshBtn = document.createElement("button");
   refreshBtn.className = "tac-btn";
-  refreshBtn.textContent = "重新扫描通配符 / 模型";
+  refreshBtn.textContent = "重新扫描模型与标签文件";
   refreshBtn.addEventListener("click", async () => {
     setStatus("正在扫描…");
     try {

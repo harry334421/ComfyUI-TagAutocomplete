@@ -7,8 +7,6 @@ data layer can be unit tested from a plain python interpreter.
 from __future__ import annotations
 
 import json
-import os
-import platform
 import threading
 from pathlib import Path
 
@@ -16,7 +14,6 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 TAGS_DIR = PACKAGE_DIR / "tags"
 TEMP_DIR = TAGS_DIR / "temp"
 WEB_DIR = PACKAGE_DIR / "web"
-DEFAULT_WILDCARD_DIR = PACKAGE_DIR / "wildcards"
 SETTINGS_FILE = PACKAGE_DIR / "settings.json"
 DB_FILE = TAGS_DIR / "tag_frequency.db"
 
@@ -30,10 +27,8 @@ DEFAULT_SETTINGS: dict = {
     "extraFile": "extra-quality-tags.csv",
     "chantFile": "demo-chants.json",
     "translationOldFormat": False,
-    "wildcardPaths": [],
     "embeddingInsertFormat": "embedding:name",
     "disableConflictingAutocomplete": True,
-    "wcWrap": "__",
 }
 
 _settings_cache: dict | None = None
@@ -147,7 +142,7 @@ def save_settings(patch: dict) -> dict:
 
 
 def ensure_dirs() -> None:
-    for path in (TAGS_DIR, TEMP_DIR, DEFAULT_WILDCARD_DIR):
+    for path in (TAGS_DIR, TEMP_DIR):
         try:
             path.mkdir(parents=True, exist_ok=True)
         except Exception:  # noqa: BLE001
@@ -162,10 +157,6 @@ def since_epoch(path: Path) -> float:
         return path.stat().st_mtime
     except Exception:
         return 0.0
-
-
-def is_hidden(path: Path) -> bool:
-    return any(part.startswith(".") for part in path.parts)
 
 
 def safe_child(base: Path, relative: str) -> Path | None:
@@ -183,7 +174,3 @@ def safe_child(base: Path, relative: str) -> Path | None:
     except Exception:  # noqa: BLE001
         return None
     return None
-
-
-def platform_label() -> str:
-    return f"{platform.system()} {platform.release()}"

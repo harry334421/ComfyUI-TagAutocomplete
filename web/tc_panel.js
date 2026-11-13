@@ -10,12 +10,12 @@
 
 import { getApp } from "./tc_env.js";
 import { attachToTextarea } from "./tc_engine.js";
+import { onSweep } from "./tc_attach.js";
 
 const PANEL_SELECTOR = '[data-testid="properties-panel"]';
 const WIDGET_LIST_SELECTOR = '[data-testid="section-widgets-list"]';
 
-let syncTimer = null;
-let mutationObserver = null;
+let unsubscribe = null;
 
 function panelRoot() {
   return document.querySelector(PANEL_SELECTOR);
@@ -177,8 +177,12 @@ export function syncPanel() {
   return attached;
 }
 
+/**
+ * Attach to / refresh the side panel editors. Runs on the shared DOM sweep
+ * instead of its own observer plus a 500 ms polling timer.
+ */
 export function installPanelSync() {
-  if (syncTimer) return;
+  if (unsubscribe) return;
   const schedule = () => {
     try {
       syncPanel();
@@ -187,28 +191,10 @@ export function installPanelSync() {
     }
   };
   schedule();
-  syncTimer = setInterval(schedule, 500);
-
-  if (typeof MutationObserver !== "undefined") {
-    let pending = null;
-    mutationObserver = new MutationObserver(() => {
-      if (pending) return;
-      pending = setTimeout(() => {
-        pending = null;
-        schedule();
-      }, 120);
-    });
-    try {
-      mutationObserver.observe(document.body, { childList: true, subtree: true });
-    } catch {
-      /* ignore */
-    }
-  }
+  unsubscribe = onSweep(schedule);
 }
 
 export function stopPanelSync() {
-  if (syncTimer) clearInterval(syncTimer);
-  syncTimer = null;
-  mutationObserver?.disconnect();
-  mutationObserver = null;
+  unsubscribe?.();
+  unsubscribe = null;
 }
